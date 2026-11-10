@@ -698,21 +698,49 @@ function renderFrame(now, faceLms, hands, sides) {
 }
 
 // ------------------------------ start-up ------------------------------
-let faceTracker = null, handTracker = null;
+let faceTracker = null, handTracker = null, mkFace = null, mkHand = null, onCPU = false;
+let cpuPref = false;                                  // set once a device's GPU has given bad results
+try { cpuPref = localStorage.getItem("xray-cpu") === "1"; } catch (e) {}
 async function loadTrackers() {
   const local = await hasLocal();
   const vision = local ? await import(LOCAL.mp) : await import(MP + "/vision_bundle.mjs");
   const files = await vision.FilesetResolver.forVisionTasks(local ? LOCAL.wasm : MP + "/wasm");
   const faceBuf = await getBytes(local ? [LOCAL.face, FACE_MODEL] : [FACE_MODEL]);
   const handBuf = await getBytes(local ? [LOCAL.hand, HAND_MODEL] : [HAND_MODEL]).catch(() => null);
-  const mkFace = d => vision.FaceLandmarker.createFromOptions(files, { baseOptions: { modelAssetBuffer: faceBuf, delegate: d },
+  mkFace = d => vision.FaceLandmarker.createFromOptions(files, { baseOptions: { modelAssetBuffer: faceBuf, delegate: d },
     runningMode: "VIDEO", numFaces: 1, outputFacialTransformationMatrixes: true, outputFaceBlendshapes: true });
-  const mkHand = d => { if (!handBuf) throw new Error("no hand model");
+  mkHand = d => { if (!handBuf) throw new Error("no hand model");
     return vision.HandLandmarker.createFromOptions(files, { baseOptions: { modelAssetBuffer: handBuf, delegate: d },
     runningMode: "VIDEO", numHands: 2 }); };
-  try { faceTracker = await mkFace("GPU"); } catch (e) { faceTracker = await mkFace("CPU"); }
-  try { try { handTracker = await mkHand("GPU"); } catch (e) { handTracker = await mkHand("CPU"); } }
-  catch (e) { handTracker = null; }                        // the head view still works without hand tracking
+  await buildTrackers(cpuPref ? "CPU" : "GPU");
+}
+async function buildTrackers(want) {                  // (re)create both trackers, on the graphics chip or the CPU
+  for (const t of [faceTracker, handTracker]) { try { if (t) t.close(); } catch (e) {} }
+  faceTracker = handTracker = null;
+  onCPU = want === "CPU";
+  if (onCPU) faceTracker = await mkFace("CPU");
+  else { try { faceTracker = await mkFace("GPU"); } catch (e) { faceTracker = await mkFace("CPU"); onCPU = true; } }
+  try { handTracker = await mkHand(onCPU ? "CPU" : "GPU"); }
+  catch (e) { try { handTracker = await mkHand("CPU"); } catch (e2) { handTracker = null; } }  // head view works without hands
+}
+// Some phones' graphics chips return broken face points, which makes the tracker fail
+// ("Design matrix norm is too small"). Rebuild the trackers on the CPU and carry on.
+let rebuilding = false, lastRebuild = 0;
+function recoverTracker(err) {
+  console.warn("Tracker error:", err);
+  if (rebuilding) return;
+  rebuilding = true;
+  const toCPU = !onCPU;
+  if (toCPU) { try { localStorage.setItem("xray-cpu", "1"); } catch (e) {} }
+  const short = String(err && err.message || err).split(/[;\n]/)[0].slice(0, 120);
+  setStatus(toCPU ? "This phone's graphics chip gave bad tracking data. Switching the tracker to CPU mode…"
+                  : "The tracker hit an error (" + short + "). Restarting it…", "bad");
+  const wait = toCPU ? 0 : Math.max(0, 1500 - (performance.now() - lastRebuild));
+  setTimeout(() => {
+    buildTrackers("CPU")
+      .catch(e => setStatus("Could not restart the tracker: " + (e && e.message || e), "bad"))
+      .finally(() => { rebuilding = false; lastRebuild = performance.now(); head.found = false; });
+  }, wait);
 }
 
 let src = null;                                     // what is being X-rayed: { kind: "live" | "clip" | "still", el }
@@ -721,7 +749,7 @@ function liveLoop() {
   const say = (t, c) => { if (statusEl.textContent !== t || statusEl.className !== (c || "")) setStatus(t, c); };
   function tick() {
     requestAnimationFrame(tick);
-    if (!src) return;
+    if (!src || rebuilding || !faceTracker) return;
     const now = performance.now();
     if (src.kind === "still") {                       // a photo: re-run the trackers on it about 30 times a second
       if (now - lastStill < 33) return;
@@ -749,7 +777,7 @@ function liveLoop() {
         // The tracker names hands as if the picture were mirrored; ours is not, so the names are swapped.
         sides = hands.map((h, i) => !!(hd[i] && hd[i][0] && hd[i][0].categoryName === "Left"));
       }
-    } catch (e) { say("The tracker hit an error: " + e.message, "bad"); return; }
+    } catch (e) { recoverTracker(e); return; }
     say(head.found ? "Tracking your head." + (hands.length ? " Hand bones on." : "")
                    : hands.length ? "Hand found. Face the camera to see inside your head."
                    : src.kind === "live" ? "No face found. Face the camera, with light on your face."
