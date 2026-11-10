@@ -16,7 +16,8 @@
            background:radial-gradient(ellipse at 50% 40%, #131a2b, #05070c 75%); border:1px solid var(--line);
            border-radius:16px; overflow:hidden; }
   .stage video, .stage canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
-  #video, #still { object-fit:cover; transform:scaleX(-1); }
+  #video, #still { object-fit:cover; }
+  .stage.mirror #video, .stage.mirror #still, .stage.mirror #shade, .stage.mirror #gl { transform:scaleX(-1); }
   #intro .btns { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; }
   button.big.alt, label.big { font:inherit; font-weight:700; font-size:17px; color:var(--fg); background:#1b2338;
                border:1px solid var(--accent); border-radius:12px; padding:13px 22px; cursor:pointer; display:inline-block; }
@@ -25,7 +26,7 @@
   .seg .segbtn { font:inherit; font-size:13px; color:var(--fg); background:#0b0f18; border:1px solid var(--line);
                  border-radius:9px; padding:7px 11px; cursor:pointer; flex:1; text-align:center; }
   .seg .segbtn:hover { border-color:var(--accent); }
-  #shade, #gl { transform:scaleX(-1); pointer-events:none; }
+  #shade, #gl { pointer-events:none; }
   #hud { pointer-events:none; }
   #intro { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
            gap:14px; text-align:center; padding:24px; }
@@ -74,7 +75,7 @@
 <body>
 <div class="wrap">
   <div class="stagecol">
-    <div class="stage" id="stage">
+    <div class="stage mirror" id="stage">
       <video id="video" playsinline muted autoplay></video>
       <canvas id="still" hidden></canvas>
       <canvas id="shade"></canvas>
@@ -82,9 +83,10 @@
       <canvas id="hud"></canvas>
       <div id="intro">
         <h2>X-RAY MIRROR</h2>
-        <p>See the skull, brain and muscles inside your own head, tracked live through your camera. Hold a hand up to see its bones.</p>
+        <p>See the skull, brain and muscles inside your own head, or point the camera at someone else. Hold a hand up to see its bones.</p>
         <div class="btns">
-          <button class="big" id="start" type="button">Live camera</button>
+          <button class="big" id="start" type="button">Selfie camera</button>
+          <button class="big alt" id="startback" type="button">Point at someone</button>
           <label class="big" for="file">Film a clip or pick a photo</label>
         </div>
         <p id="introhint" hidden></p>
@@ -100,7 +102,8 @@
     <div class="panel">
       <h3>Source</h3>
       <div class="seg">
-        <button id="start2" type="button">Live camera</button>
+        <button id="start2" type="button">Selfie cam</button>
+        <button id="startback2" type="button">Back cam</button>
         <label class="segbtn" for="file">Clip or photo</label>
       </div>
     </div>
@@ -130,6 +133,7 @@
       <h3>Look</h3>
       <div class="seg" id="style">
         <button data-style="xray">X-ray</button>
+        <button data-style="neon">Neon</button>
         <button data-style="solid">Solid</button>
       </div>
       <div class="row"><label for="bright">Brightness</label><input id="bright" type="range" min="0.3" max="2.2" step="0.01"></div>
@@ -159,7 +163,8 @@
     </div>
 
     <div class="panel">
-      <h3>Fit to my head</h3>
+      <h3>Fit to the head</h3>
+      <label class="ck" style="font-weight:600;margin-bottom:11px"><input type="checkbox" id="autofit">Auto-fit to each head</label>
       <div class="row"><label for="fs">Overall size <b id="fsv"></b></label><input id="fs" type="range" min="0.7" max="1.4" step="0.005"></div>
       <div class="row"><label for="fw">Width <b id="fwv"></b></label><input id="fw" type="range" min="0.8" max="1.25" step="0.005"></div>
       <div class="row"><label for="fh">Height <b id="fhv"></b></label><input id="fh" type="range" min="0.8" max="1.25" step="0.005"></div>
@@ -168,7 +173,7 @@
       <div class="row"><label for="fy">Up / down <b id="fyv"></b></label><input id="fy" type="range" min="-4" max="4" step="0.1"></div>
       <div class="row"><label for="fz">Forward / back <b id="fzv"></b></label><input id="fz" type="range" min="-4" max="4" step="0.1"></div>
       <button class="linkbtn" id="fitreset" type="button">Reset fit</button>
-      <p class="small" style="margin-top:8px">Tip: pick the Solid look and set "Real me showing through" to about half, then line the skull up with your face.</p>
+      <p class="small" style="margin-top:8px">Auto-fit matches size, position and each face's proportions. The sliders fine-tune on top of it. To check the fit, pick the Solid look and set "Real me showing through" to about half.</p>
     </div>
 
     <p class="small">The anatomy is a real 3D dataset of one adult, scaled and pinned to your head. It shows where structures typically sit, not a scan of you, and it is not a medical tool. Video is processed on this device and never uploaded.</p>
@@ -183,6 +188,10 @@
 const $ = id => document.getElementById(id);
 const statusEl = $("status"), video = $("video"), stage = $("stage");
 function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+// The selfie camera is shown like a mirror; the back camera, clips and photos are shown as filmed.
+let mirror = true;
+const mxp = x => mirror ? W - x : x;               // a canvas pixel x <-> where it shows on screen (works both ways)
+const mxn = x => mirror ? 1 - x : x;               // the same for 0..1 tracker coordinates
 const DEMO = location.hash === "#demo";            // built-in test scene, no camera needed
 const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
 const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
@@ -211,7 +220,7 @@ const META = JSON.parse($("meshmeta").textContent);
 // ------------------------------ settings ------------------------------
 const DEFAULTS = { skull: true, brain: false, muscles: false, eyes: true, outline: true, hands: true,
                    style: "xray", bright: 1, real: 0.12, feather: 0.2, reveal: "whole", cut: 0.5, showdata: false,
-                   fs: 1, fw: 1, fh: 1, fd: 1, fx: 0, fy: 0, fz: 0, labels: false };
+                   fs: 1, fw: 1, fh: 1, fd: 1, fx: 0, fy: 0, fz: 0, labels: false, autofit: true };
 let S = Object.assign({}, DEFAULTS);
 try { Object.assign(S, JSON.parse(localStorage.getItem("xr_settings") || "{}")); } catch (e) {}
 function save() { try { localStorage.setItem("xr_settings", JSON.stringify(S)); } catch (e) {} }
@@ -225,7 +234,7 @@ function syncUI() {
   for (const k of ["fs", "fw", "fh", "fd"]) $(k + "v").textContent = Math.round(S[k] * 100) + "%";
   for (const k of ["fx", "fy", "fz"]) $(k + "v").textContent = (S[k] > 0 ? "+" : "") + S[k].toFixed(1) + " cm";
   $("featherv").textContent = Math.round(S.feather * 100) + "%";
-  $("labels").checked = S.labels;
+  $("labels").checked = S.labels; $("autofit").checked = S.autofit;
   $("reveal").value = S.reveal; $("showdata").checked = S.showdata; $("data").hidden = !S.showdata;
   $("cutrow").hidden = S.reveal === "whole";
   $("cutlabel").textContent = S.reveal === "lens" ? "Lens size" : "Cut position";
@@ -234,6 +243,7 @@ for (const k of LAYERS) $("L_" + k).onchange = e => { S[k] = e.target.checked; s
 for (const b of $("style").children) b.onclick = () => { S.style = b.dataset.style; save(); syncUI(); applyStyle(); };
 for (const k of SLIDERS) $(k).oninput = e => { S[k] = parseFloat(e.target.value); save(); syncUI(); };
 $("labels").onchange = e => { S.labels = e.target.checked; save(); };
+$("autofit").onchange = e => { S.autofit = e.target.checked; save(); };
 $("reveal").onchange = e => { S.reveal = e.target.value; S.cut = 0.5; save(); syncUI(); };
 $("showdata").onchange = e => { S.showdata = e.target.checked; save(); syncUI(); };
 $("fitreset").onclick = () => { S.fs = S.fw = S.fh = S.fd = 1; S.fx = S.fy = S.fz = 0; save(); syncUI(); };
@@ -265,7 +275,9 @@ void main() {
 const FRAG = `
 uniform vec3 uColor; uniform vec3 uSolidColor;
 uniform float uOpacity, uGain, uMode, uClipOn, uFade, uFeather, uCutSoft; uniform vec4 uClip;
+uniform sampler2D uVideo; uniform vec2 uRes; uniform float uTime, uRadio, uHasVideo;
 varying vec3 vN; varying vec3 vV; varying vec3 vL;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 void main() {
   float soft = 1.0;                                    // edge feather: 1 = fully drawn, 0 = faded out
   if (uClipOn > 0.5) {
@@ -277,23 +289,33 @@ void main() {
   float ndv = abs(dot(n, normalize(vV)));
   if (uFeather > 0.001) soft *= smoothstep(0.0, uFeather, ndv);   // surfaces turning away at the outline fade out
   float fade = uFade > 0.5 ? smoothstep(-12.4, -9.2, vL.y) : 1.0;   // the neck fades out instead of ending in a hard edge
-  if (uMode > 1.5) {                                   // flat veil that hides the real face
+  float grain = hash(floor(gl_FragCoord.xy) + floor(uTime * 24.0)) - 0.5;   // film grain, redrawn 24 times a second
+  if (uMode > 2.5) {                                   // radiograph soft tissue in place of the real face
+    float thick = pow(ndv, 0.45);                      // an x-ray crosses more flesh in the middle of the head than at its edge
+    float lum = uHasVideo > 0.5 ? dot(texture2D(uVideo, gl_FragCoord.xy / uRes).rgb, vec3(0.299, 0.587, 0.114)) : 0.5;
+    float v = 0.05 + 0.2 * thick + 0.12 * (1.0 - lum) * thick + 0.05 * grain;   // plus a faint negative of the face
+    float edge = smoothstep(0.0, 0.6, ndv);            // thin flesh at the outline fades into the real picture
+    gl_FragColor = vec4(vec3(v) * vec3(0.9, 0.96, 1.0), uOpacity * fade * soft * edge);
+  } else if (uMode > 1.5) {                            // flat veil that hides the real face
     gl_FragColor = vec4(uColor, uOpacity * fade * soft);
   } else if (uMode > 0.5) {                            // solid, lit
     vec3 fn = gl_FrontFacing ? n : -n;
     float d = max(dot(fn, normalize(vec3(0.35, 0.55, 0.76))), 0.0);
     float rim = pow(1.0 - ndv, 2.5);
     gl_FragColor = vec4(uSolidColor * (0.28 + 0.78 * d) * uGain + vec3(0.25) * rim, uOpacity * soft);
-  } else {                                             // x-ray: edges glow, flat areas stay see-through
-    float rim = pow(1.0 - ndv, 2.1);
-    float a = clamp((0.035 + 0.95 * rim) * uGain * uOpacity * fade, 0.0, 1.0);
-    gl_FragColor = vec4(uColor, a * soft);
+  } else {                                             // x-ray: light adds up through every surface it crosses
+    // neon: thin glowing edges. radiograph: denser fill, softer edges, so overlapping bone reads brighter, like real film
+    float rim = pow(1.0 - ndv, mix(2.1, 1.6, uRadio));
+    float a = clamp((mix(0.035, 0.05, uRadio) + mix(0.95, 0.62, uRadio) * rim) * uGain * uOpacity * fade, 0.0, 1.0);
+    gl_FragColor = vec4(uColor * (1.0 + uRadio * 0.12 * grain), a * soft);
   }
 }`;
 
+let SHARED = null;                 // uniforms every material shares: camera picture, screen size, time, look
 function makeMat(xray, solid, mode) {
   return new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: new THREE.Color(xray) }, uSolidColor: { value: new THREE.Color(solid) },
+    uniforms: { uVideo: SHARED.uVideo, uRes: SHARED.uRes, uTime: SHARED.uTime, uRadio: SHARED.uRadio, uHasVideo: SHARED.uHasVideo,
+                uColor: { value: new THREE.Color(xray) }, uSolidColor: { value: new THREE.Color(solid) },
                 uOpacity: { value: 1 }, uGain: { value: 1 }, uMode: { value: mode || 0 }, uOrtho: { value: 0 }, uFade: { value: 0 }, uFeather: { value: 0 }, uCutSoft: { value: 0 },
                 uClipOn: { value: 0 }, uClip: { value: new THREE.Vector4(1, 0, 0, 0) }, uToHead: { value: new THREE.Matrix4() } },
     vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide, transparent: true,
@@ -327,6 +349,8 @@ function buildScene() {
   cam = new THREE.PerspectiveCamera(63, W / H, 1, 10000);
   ortho = new THREE.OrthographicCamera(0, W, H, 0, -5000, 5000);
   const geos = decodeMeshes();
+  SHARED = { uVideo: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 },
+             uRadio: { value: 1 }, uHasVideo: { value: 0 } };
 
   headGroup = new THREE.Group(); headGroup.matrixAutoUpdate = false; headGroup.visible = false;
   headScene.add(headGroup);
@@ -335,7 +359,7 @@ function buildScene() {
     const mesh = new THREE.Mesh(geo, makeMat(xray, solid, mode));
     mesh.renderOrder = order; mesh.frustumCulled = false;
     (parent || headGroup).add(mesh);
-    meshes[name] = { mesh, layer, fixedMode: mode };
+    meshes[name] = { mesh, layer, fixedMode: mode, neon: xray, radio: RADIO[name] };
     return mesh;
   };
   add("veil", geos.skin, "veil", 0x04070d, 0x04070d, -10, null, 2).material.uniforms.uFade.value = 1;
@@ -358,15 +382,22 @@ function buildScene() {
   applyStyle(); resize();
 }
 
+// radiograph colours: near-white bone, greys for everything that is not bone
+const RADIO = { veil: 0x04070d, outline: 0x7d8796, muscles: 0xa9b0bb, cranium: 0xf4f7fc, jaw: 0xf4f7fc, eyes: 0x8e98a6,
+                cerebrum: 0xb7c0cc, hindbrain: 0xbcc4cf };
+const HAND_INFO = { layer: "hands", neon: 0xd9f0ff, radio: 0xf4f7fc };
 function eachMat(fn) {
   for (const k in meshes) fn(meshes[k].mesh.material, meshes[k]);
-  for (const r of handRigs) { fn(r.palm.material, { layer: "hands" }); for (const b of r.bones) fn(b.material, { layer: "hands" }); }
+  for (const r of handRigs) { fn(r.palm.material, HAND_INFO); for (const b of r.bones) fn(b.material, HAND_INFO); }
 }
 function applyStyle() {
   if (!renderer) return;
-  const solid = S.style === "solid";
+  const solid = S.style === "solid", radio = S.style === "xray";
+  SHARED.uRadio.value = radio ? 1 : 0;
   eachMat((m, info) => {
-    if (info.fixedMode !== undefined) return;            // veil and outline keep their own look
+    if (info.neon !== undefined) m.uniforms.uColor.value.setHex(radio ? info.radio : info.neon);
+    if (info.layer === "veil") { m.uniforms.uMode.value = radio ? 3 : 2; return; }   // radiograph: soft tissue, else a dark veil
+    if (info.fixedMode !== undefined) return;            // the outline keeps its own look
     m.uniforms.uMode.value = solid ? 1 : 0;
     m.blending = solid ? THREE.NormalBlending : THREE.AdditiveBlending;
     m.depthTest = solid; m.depthWrite = solid; m.needsUpdate = true;
@@ -382,6 +413,7 @@ function resize() {
     cam.aspect = W / H; cam.updateProjectionMatrix(); baseProj = cam.projectionMatrix.clone();
     ortho.right = W; ortho.top = H; ortho.updateProjectionMatrix();
   }
+  if (renderer) renderer.getDrawingBufferSize(SHARED.uRes.value);
   for (const id of ["shade", "hud"]) { const c = $(id); c.width = W; c.height = H; }
 }
 new ResizeObserver(resize).observe(stage);
@@ -395,22 +427,43 @@ function initMath() {
   head.pos = new THREE.Vector3(); head.quat = new THREE.Quaternion(); head.scl = new THREE.Vector3(1, 1, 1);
 }
 const FIT_IDS = Object.keys(META.fit).map(Number);
+// Auto-fit: heads differ in proportions. Measure this face's height-to-width ratio from the tracked points
+// (forehead to chin, cheek to cheek, in 3D so turning the head changes it little) and stretch the anatomy to match.
+const d3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const MODEL_RATIO = d3(META.fit[10], META.fit[152]) / d3(META.fit[234], META.fit[454]);
+const AUTO = { ratio: 1, w: 1, h: 1 };
+function measureShape(lms, fresh) {
+  if (!S.autofit) { AUTO.ratio = AUTO.w = AUTO.h = 1; return; }
+  const P = i => [lms[i].x * W, -lms[i].y * H, -lms[i].z * W];
+  const fw = d3(P(234), P(454)), fh = d3(P(10), P(152));
+  if (!(fw > 1 && fh > 1)) return;
+  const r = Math.max(0.8, Math.min(1.25, (fh / fw) / MODEL_RATIO));
+  tmpV.set(0, 0, 1).applyQuaternion(head.quat);       // how squarely the face points at the camera
+  const front = Math.max(0, tmpV.z);
+  // trust straight-on views most; an open mouth moves the chin, so those frames are skipped
+  const k = fresh ? 1 : head.jaw > 0.15 ? 0 : 0.08 * front * front;
+  AUTO.ratio += (r - AUTO.ratio) * k;
+  AUTO.w = 1 / Math.sqrt(AUTO.ratio); AUTO.h = Math.sqrt(AUTO.ratio);
+}
 
 function updateHead(matrixData, lms, jawOpen) {
   tmpM.fromArray(matrixData);
   const e = tmpM.elements;                               // accept either memory layout
   if (Math.abs(e[12]) + Math.abs(e[13]) + Math.abs(e[14]) < 1e-6 && Math.abs(e[3]) + Math.abs(e[7]) + Math.abs(e[11]) > 1e-3) tmpM.transpose();
   tmpM.decompose(tmpP, tmpQ, tmpS);
-  if (!head.found) { head.pos.copy(tmpP); head.quat.copy(tmpQ); head.scl.copy(tmpS); head.fitS = 1; head.fitX = head.fitY = 0; }
+  const fresh = !head.found;                           // a new face (or the same one found again): fit from scratch
+  if (fresh) { head.pos.copy(tmpP); head.quat.copy(tmpQ); head.scl.copy(tmpS); head.fitS = 1; head.fitX = head.fitY = 0; head.jaw = jawOpen; }
   else { head.pos.lerp(tmpP, 0.6); head.quat.slerp(tmpQ, 0.55); head.scl.lerp(tmpS, 0.5); }
   head.found = true; head.lms = lms;
   head.jaw += (jawOpen - head.jaw) * 0.6;
+  measureShape(lms, fresh);
   tmpM.compose(head.pos, head.quat, head.scl);           // smoothed pose
 
   // Pin the model to the face on screen: compare where key face points land with where the tracker saw them.
   let pmx = 0, pmy = 0, qmx = 0, qmy = 0; const P = [], Q = [];
   for (const id of FIT_IDS) {
-    tmpV.fromArray(META.fit[id]).applyMatrix4(tmpM).applyMatrix4(baseProj);
+    tmpV.fromArray(META.fit[id]); tmpV.x *= AUTO.w; tmpV.y *= AUTO.h;
+    tmpV.applyMatrix4(tmpM).applyMatrix4(baseProj);
     const q = lms[id]; if (!q) continue;
     P.push([tmpV.x, tmpV.y]); Q.push([q.x * 2 - 1, 1 - q.y * 2]);
   }
@@ -429,8 +482,9 @@ function updateHead(matrixData, lms, jawOpen) {
   cam.projectionMatrix.copy(baseProj).premultiply(corr);
   cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
 
-  // the user's manual fit: overall size, per-axis stretch and position (local +x is your left, so the mirror view flips it)
-  fitM.makeScale(S.fs * S.fw, S.fs * S.fh, S.fs * S.fd).setPosition(-S.fx, S.fy, S.fz);
+  // auto-fit stretch, then the manual fine-tuning: overall size, per-axis stretch and position
+  // (local +x is the person's left, which a mirror view shows on the left of the screen)
+  fitM.makeScale(S.fs * S.fw * AUTO.w, S.fs * S.fh * AUTO.h, S.fs * S.fd).setPosition((mirror ? -1 : 1) * S.fx, S.fy, S.fz);
   headGroup.matrix.copy(tmpM).multiply(fitM);
   headGroup.matrixWorldNeedsUpdate = true;          // we set the matrix by hand, so tell three.js it changed
   headGroup.visible = true;
@@ -440,6 +494,7 @@ function updateHead(matrixData, lms, jawOpen) {
 const clipState = { on: 0, x: 1, y: 0, w: 0 };
 let jawM = null;
 const XRAY_GAIN = { outline: 0.55, muscles: 0.5, cerebrum: 0.36, hindbrain: 0.6, eyes: 0.9 };
+const RADIO_GAIN = { outline: 0.5, muscles: 0.7, cerebrum: 0.6, hindbrain: 0.6, eyes: 0.45, cranium: 0.7, jaw: 0.75 };   // on film, soft parts show faintly
 function applyLayers() {
   const reveal = S.reveal;
   let clipOn = 0, cx = 1, cy = 0, cz = 0, cw = 0;
@@ -456,7 +511,8 @@ function applyLayers() {
     const { mesh, layer } = meshes[k], u = mesh.material.uniforms;
     mesh.visible = layer === "veil" ? true : !!S[layer];
     // x-ray light adds up, so layers with many overlapping surfaces get a lower share
-    u.uGain.value = (S.style === "solid" && k !== "outline") ? Math.min(1.25, 0.6 + 0.4 * S.bright) : S.bright * (XRAY_GAIN[k] || 1) * (layer === "outline" ? 1 : share);
+    u.uGain.value = (S.style === "solid" && k !== "outline") ? Math.min(1.25, 0.6 + 0.4 * S.bright)
+                  : S.bright * (XRAY_GAIN[k] || 1) * (layer === "outline" ? 1 : share) * (S.style === "xray" ? (RADIO_GAIN[k] || 1) : 1);
     u.uOpacity.value = layer === "veil" ? 1 - S.real : 1;
     u.uClipOn.value = clipOn; u.uClip.value.set(cx, cy, cz, cw);
     u.uFeather.value = S.feather * 0.75; u.uCutSoft.value = S.feather * 5;   // outline softness, and up to 5 cm of fade at a cut
@@ -515,7 +571,7 @@ function drawHandVeil(g, lms, alpha) {
   const sc = drawHandVeil.sc || (drawHandVeil.sc = document.createElement("canvas"));
   if (sc.width !== W || sc.height !== H) { sc.width = W; sc.height = H; }
   const s = sc.getContext("2d");
-  s.clearRect(0, 0, W, H); s.fillStyle = s.strokeStyle = "#04070d"; s.lineJoin = s.lineCap = "round";
+  s.clearRect(0, 0, W, H); s.fillStyle = s.strokeStyle = S.style === "xray" ? "#2a3039" : "#04070d"; s.lineJoin = s.lineCap = "round";
   s.lineWidth = d * 0.34; s.fill(path); s.stroke(path); s.lineWidth = d * 0.36; s.stroke(fingers);
   const blur = S.feather * d * 0.22;                     // soften the hand's dark outline by the same setting
   g.filter = blur > 0.5 ? "blur(" + blur.toFixed(1) + "px)" : "none";
@@ -529,7 +585,7 @@ const labelState = {};                            // text -> { side, y } so labe
 let lp, ln, lc;
 function toScreen(v) {                            // head/view-space point -> heads-up layer pixels (mirrored like the picture)
   lc.copy(v).applyMatrix4(cam.projectionMatrix);
-  return { x: W - (lc.x + 1) / 2 * W, y: (1 - lc.y) / 2 * H };
+  return { x: mxp((lc.x + 1) / 2 * W), y: (1 - lc.y) / 2 * H };
 }
 function collectHeadLabels(lens) {
   const out = [], solid = S.style === "solid", M = headGroup.matrix;
@@ -602,7 +658,7 @@ function drawLabels(g, lens) {
   let hx = W / 2, halfW = W * 0.16;
   if (head.found && headGroup.visible) {
     lp.fromArray(HEAD_C).applyMatrix4(headGroup.matrix);
-    const c = toScreen(lp); lp.x += 10.5 * S.fs * S.fw; const e = toScreen(lp);
+    const c = toScreen(lp); lp.x += 10.5 * S.fs * S.fw * AUTO.w; const e = toScreen(lp);
     hx = c.x; halfW = Math.abs(e.x - c.x);
     const items = collectHeadLabels(lens);
     // when the head is turned most points sit on one side, so split nearer the middle of the points to balance the columns
@@ -612,12 +668,12 @@ function drawLabels(g, lens) {
   }
   if (S.hands) handRigs.forEach((rig, i) => {
     if (!rig.group.visible || !rig.pts) return;
-    const P = rig.pts, at = (a, b, k) => ({ ax: W - (P[a].x + (P[b].x - P[a].x) * k), ay: H - (P[a].y + (P[b].y - P[a].y) * k) });
+    const P = rig.pts, at = (a, b, k) => ({ ax: mxp(P[a].x + (P[b].x - P[a].x) * k), ay: H - (P[a].y + (P[b].y - P[a].y) * k) });
     const items = [["Distal phalanx", 11, 12, 0.5], ["Middle phalanx", 10, 11, 0.5], ["Proximal phalanx", 9, 10, 0.5],
                    ["Metacarpal", 0, 9, 0.62], ["Carpal bones (wrist)", 0, 9, 0.1]]
       .map(([text, a, b, k]) => Object.assign({ text, color: LABEL_COLOR.hands }, at(a, b, k)))
       .filter(it => !lens || Math.hypot(it.ax - lens.x, it.ay - lens.y) <= lens.r);
-    let lo = 1e9, hi = -1e9; for (const p of P) { lo = Math.min(lo, W - p.x); hi = Math.max(hi, W - p.x); }
+    let lo = 1e9, hi = -1e9; for (const p of P) { lo = Math.min(lo, mxp(p.x)); hi = Math.max(hi, mxp(p.x)); }
     // put all of a hand's labels on its outer side, away from the head
     const mid = (lo + hi) / 2, outerRight = mid > hx, far = outerRight ? lo - 1e4 : hi + 1e4;
     layoutLabels(g, items, far, outerRight ? hi - far : far - lo, "hand" + i + ":");
@@ -625,7 +681,7 @@ function drawLabels(g, lens) {
 }
 
 // ------------------------------ per-frame update ------------------------------
-let pointer = null, frames = 0, fps = 0, fpsAt = 0, dataAt = 0;
+let pointer = null, frames = 0, fps = 0, fpsAt = 0, dataAt = 0, vidTex = null, texFor = -1;
 stage.addEventListener("pointermove", e => { const r = stage.getBoundingClientRect(); pointer = { x: e.clientX - r.left, y: e.clientY - r.top }; });
 stage.addEventListener("pointerleave", () => { pointer = null; });
 
@@ -643,6 +699,13 @@ function renderFrame(now, faceLms, hands, sides) {
   });
   if (!head.found) headGroup.visible = false;
   applyLayers();
+  SHARED.uTime.value = now / 1000;
+  if (src && texFor !== srcVersion) {                  // the soft-tissue shader reads the camera picture
+    if (vidTex) vidTex.dispose();
+    vidTex = src.kind === "still" ? new THREE.CanvasTexture(src.el) : new THREE.VideoTexture(src.el);
+    vidTex.minFilter = vidTex.magFilter = THREE.LinearFilter; vidTex.generateMipmaps = false;
+    texFor = srcVersion; SHARED.uVideo.value = vidTex; SHARED.uHasVideo.value = 1;
+  }
 
   // x-ray lens: a round window; outside it you see the plain camera picture
   let mask = "none", lens = null;
@@ -650,11 +713,11 @@ function renderFrame(now, faceLms, hands, sides) {
     const rad = (0.07 + 0.38 * S.cut) * W;
     let cx, cy;                                              // in the canvas's own (unmirrored) pixel space
     if (hands[0]) { cx = hands[0][8].x * W; cy = hands[0][8].y * H; }
-    else if (pointer) { cx = W - pointer.x; cy = pointer.y; }
+    else if (pointer) { cx = mxp(pointer.x); cy = pointer.y; }
     else if (faceLms) { cx = faceLms[1].x * W; cy = faceLms[1].y * H; }
     else { cx = W / 2; cy = H / 2; }
     mask = "radial-gradient(circle " + rad.toFixed(1) + "px at " + cx.toFixed(1) + "px " + cy.toFixed(1) + "px, #000 " + (98 - 78 * S.feather).toFixed(0) + "%, transparent 100%)";
-    lens = { x: W - cx, y: cy, r: rad };
+    lens = { x: mxp(cx), y: cy, r: rad };
   }
   for (const id of ["gl", "shade"]) { const st = $(id).style; st.maskImage = mask; st.webkitMaskImage = mask; }
 
@@ -668,13 +731,13 @@ function renderFrame(now, faceLms, hands, sides) {
   if (lens) { g.strokeStyle = "rgba(127,209,255,.8)"; g.lineWidth = 2; g.beginPath(); g.arc(lens.x, lens.y, lens.r, 0, 6.3); g.stroke(); }
   if (S.labels) drawLabels(g, lens);
   if (S.showdata) {
-    if (faceLms) { g.fillStyle = "rgba(127,255,170,.85)"; for (const p of faceLms) g.fillRect((1 - p.x) * W - 1, p.y * H - 1, 2, 2); }
+    if (faceLms) { g.fillStyle = "rgba(127,255,170,.85)"; for (const p of faceLms) g.fillRect(mxn(p.x) * W - 1, p.y * H - 1, 2, 2); }
     g.strokeStyle = "rgba(255,183,3,.9)"; g.fillStyle = "#ffb703"; g.lineWidth = 1.5;
     for (const lms of hands) {
       for (const c of [[0,1,2,3,4],[0,5,6,7,8],[5,9,10,11,12],[9,13,14,15,16],[13,17,18,19,20],[0,17]]) {
-        g.beginPath(); c.forEach((i, k) => { const x = (1 - lms[i].x) * W, y = lms[i].y * H; k ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke();
+        g.beginPath(); c.forEach((i, k) => { const x = mxn(lms[i].x) * W, y = lms[i].y * H; k ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke();
       }
-      for (const p of lms) { g.beginPath(); g.arc((1 - p.x) * W, p.y * H, 3, 0, 6.3); g.fill(); }
+      for (const p of lms) { g.beginPath(); g.arc(mxn(p.x) * W, p.y * H, 3, 0, 6.3); g.fill(); }
     }
     if (now - dataAt > 120) {
       dataAt = now;
@@ -685,10 +748,11 @@ function renderFrame(now, faceLms, hands, sides) {
                   ["distance", (-head.pos.z).toFixed(0) + " cm (estimate)"],
                   ["turn / nod / tilt", deg(eu.y) + " / " + deg(eu.x) + " / " + deg(eu.z)],
                   ["jaw open", head.jaw.toFixed(2)],
-                  ["screen fit", "scale " + head.fitS.toFixed(3) + ", shift " + head.fitX.toFixed(3) + ", " + head.fitY.toFixed(3)]);
+                  ["screen fit", "scale " + head.fitS.toFixed(3) + ", shift " + head.fitX.toFixed(3) + ", " + head.fitY.toFixed(3)],
+                  ["auto-fit", S.autofit ? "width " + Math.round(AUTO.w * 100) + "%, height " + Math.round(AUTO.h * 100) + "%" : "off"]);
       } else rows.push(["face", "not found"]);
       rows.push(["hands", hands.length ? hands.map((h, i) => sides[i] ? "right" : "left").join(" + ") : "none"]);
-      if (hands[0]) rows.push(["index fingertip", (1 - hands[0][8].x).toFixed(2) + ", " + hands[0][8].y.toFixed(2)]);
+      if (hands[0]) rows.push(["index fingertip", mxn(hands[0][8].x).toFixed(2) + ", " + hands[0][8].y.toFixed(2)]);
       rows.push(["layers", LAYERS.filter(k => S[k]).join(", ") || "none"], ["speed", fps + " frames/s"]);
       $("data").textContent = rows.map(r => pad(r[0]) + r[1]).join("\n");
     }
@@ -851,8 +915,10 @@ async function ensureEngine() {                      // engine + trackers + the 
 
 let liveStream = null, clipURL = null;
 function stopLive() { if (liveStream) { for (const t of liveStream.getTracks()) t.stop(); liveStream = null; } }
-function useSource(kind, el, w, h) {
-  src = { kind, el }; head.found = false;
+let srcVersion = 0;
+function useSource(kind, el, w, h, mirrored) {
+  src = { kind, el }; head.found = false; srcVersion++;
+  mirror = !!mirrored; stage.classList.toggle("mirror", mirror);
   for (const r of handRigs) r.group.visible = false;
   video.hidden = kind === "still"; $("still").hidden = kind !== "still";
   if (w && h) stage.style.setProperty("--ar", (w / h).toFixed(4));
@@ -861,28 +927,31 @@ function useSource(kind, el, w, h) {
 
 const BLOCKED_MSG = "The live camera is blocked here: pages opened inside an app (like Claude) can't use the camera. " +
                     "Open this file directly in Chrome or Edge on a computer, or from an https:// link on your phone.";
-async function startLive() {
-  for (const b of [$("start"), $("start2")]) b.disabled = true;
+const CAM_BUTTONS = ["start", "start2", "startback", "startback2"];
+async function startLive(facing) {
+  for (const id of CAM_BUTTONS) $(id).disabled = true;
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw Object.assign(new Error("no camera API"), { name: "NoCameraAPI" });
-    setStatus("Asking for the camera…");
+    setStatus(facing === "environment" ? "Opening the back camera…" : "Asking for the camera…");
+    if (liveStream) { stopLive(); if (src && src.kind === "live") src = null; }   // phones can't open two cameras at once
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-    stopLive(); liveStream = stream;
+      video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    liveStream = stream;
     video.pause(); video.removeAttribute("src"); video.loop = false; video.srcObject = stream;
     await video.play();
-    useSource("live", video, video.videoWidth, video.videoHeight);
+    const tr = stream.getVideoTracks()[0], got = tr && tr.getSettings ? tr.getSettings().facingMode : "";
+    useSource("live", video, video.videoWidth, video.videoHeight, got ? got === "user" : facing !== "environment");
     await ensureEngine();
   } catch (err) {
     if (!src) $("intro").hidden = false;
     const name = err && err.name;
     if (name === "NoCameraAPI" || ((name === "NotAllowedError" || name === "SecurityError") && blockedByFrame())) setStatus(BLOCKED_MSG, "bad");
     else if (name === "NotAllowedError" || name === "SecurityError")
-      setStatus("Camera access was refused. Allow the camera for this page and tap Live camera again, or use a clip or photo.", "bad");
+      setStatus("Camera access was refused. Allow the camera for this page and tap the camera button again, or use a clip or photo.", "bad");
     else if (name === "NotFoundError" || name === "OverconstrainedError") setStatus("No camera found on this device. Use a clip or photo instead.", "bad");
     else if (name === "NotReadableError") setStatus("The camera is busy in another app or tab. Close it and try again.", "bad");
     else setStatus("Could not start the camera: " + (err && err.message ? err.message : String(err)), "bad");
-  } finally { for (const b of [$("start"), $("start2")]) b.disabled = false; }
+  } finally { for (const id of CAM_BUTTONS) $(id).disabled = false; }
 }
 function blockedByFrame() {                          // true when this page sits in a frame that does not allow the camera
   try {
@@ -906,7 +975,7 @@ async function startFile(file) {
       const c = $("still"); c.width = Math.round(w * k); c.height = Math.round(h * k);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
       stopLive(); video.pause();
-      useSource("still", c, c.width, c.height);
+      useSource("still", c, c.width, c.height, false);
     } else {
       stopLive();
       if (clipURL) URL.revokeObjectURL(clipURL);
@@ -917,7 +986,7 @@ async function startFile(file) {
       });
       video.onloadeddata = video.onerror = null;
       await video.play();
-      useSource("clip", video, video.videoWidth, video.videoHeight);
+      useSource("clip", video, video.videoWidth, video.videoHeight, false);
     }
     await ensureEngine();
   } catch (err) {
@@ -926,8 +995,8 @@ async function startFile(file) {
   }
 }
 
-$("start").onclick = startLive;
-$("start2").onclick = startLive;
+$("start").onclick = $("start2").onclick = () => startLive("user");
+$("startback").onclick = $("startback2").onclick = () => startLive("environment");
 $("file").onchange = e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; startFile(f); };
 stage.addEventListener("dragover", e => e.preventDefault());
 stage.addEventListener("drop", e => { e.preventDefault(); const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) startFile(f); });
